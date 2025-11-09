@@ -97,7 +97,7 @@ CLIOptions CLIParser::parse(int argc, char* argv[]) {
         }
         else if (arg == "--compare-all" || arg == "--compare") {
             options.compare_all = true;
-            options.algorithm = static_cast<SchedulingAlgorithm>(-1); // store an invalid enum call vall so the default becomes all
+            options.algorithm = static_cast<SchedulingAlgorithm>(-1); // use sentinel value (-1) to represent "All" algorithms
         }
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: schedsim [OPTIONS]\n"
