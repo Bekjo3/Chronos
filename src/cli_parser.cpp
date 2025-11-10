@@ -200,7 +200,6 @@ bool CLIParser::validateOptions(const CLIOptions& options) {
         return false;
     }
     
-    // If quantum is specified but not using RR, warn (but don't fail)
     if (!options.compare_all && options.quantum.has_value() && options.algorithm != SchedulingAlgorithm::RR) {
         std::cout << "Warning: --quantum specified but algorithm is not Round Robin. "
                   << "Quantum will be ignored.\n";
