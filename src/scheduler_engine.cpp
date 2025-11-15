@@ -42,14 +42,21 @@ ScheduleResult SchedulerEngine::run(std::vector<Job> jobs, ISchedulingPolicy& po
     ready_queue.reserve(jobs.size());
     result.completed_jobs.reserve(jobs.size());
     
+    // Shared storage for completed jobs (thread-safe)
+    std::vector<Job> completed_jobs_shared;
+    completed_jobs_shared.reserve(jobs.size());
+    std::mutex completed_mutex;
+    
     std::mutex queue_mutex;
     std::condition_variable job_available;
     std::atomic<bool> simulation_running(true);
     std::atomic<float> current_time(simulation_start);
 
     // Create and start worker pool
+    std::atomic<size_t> context_switch_counter(0);
     WorkerPool worker_pool(num_cores, policy, ready_queue, 
-                          queue_mutex, job_available, simulation_running);
+                          queue_mutex, job_available, simulation_running,
+                          completed_jobs_shared, completed_mutex, context_switch_counter);
     worker_pool.start();
 
     // Start scheduler thread
@@ -57,7 +64,7 @@ ScheduleResult SchedulerEngine::run(std::vector<Job> jobs, ISchedulingPolicy& po
                          std::move(jobs), std::ref(policy),
                          std::ref(ready_queue), std::ref(queue_mutex),
                          std::ref(job_available), std::ref(simulation_running),
-                         std::ref(result));
+                         std::ref(result), std::ref(worker_pool));
 
     // Wait for scheduler to finish
     scheduler.join();
@@ -67,23 +74,45 @@ ScheduleResult SchedulerEngine::run(std::vector<Job> jobs, ISchedulingPolicy& po
     job_available.notify_all();
     worker_pool.stop();
 
-    // Collect any remaining completed jobs
+    // Collect completed jobs from shared storage
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex);
+        result.completed_jobs = std::move(completed_jobs_shared);
+    }
+    
+    // Collect any remaining completed jobs from ready queue
     {
         std::lock_guard<std::mutex> lock(queue_mutex);
         collectCompletedJobs(ready_queue, result.completed_jobs, queue_mutex);
     }
 
-    // Calculate final metrics
-    result.makespan = current_time.load() - simulation_start;
-    if (result.makespan < EPSILON) {
-        result.makespan = 0.0f;
-    }
-
-    // Calculate totals from completed jobs
+    // Calculate final metrics from actual job completion times
+    float earliest_start = simulation_start;
+    float latest_finish = simulation_start;
+    
     for (const auto& job : result.completed_jobs) {
         result.total_waiting_time += job.getWaitingTime();
         result.total_turnaround_time += job.getTurnaroundTime();
+        result.cpu_active_time += job.getBurstTime();
+        
+        if (job.getStartTime() >= 0.0f && (earliest_start == simulation_start || job.getStartTime() < earliest_start)) {
+            earliest_start = job.getStartTime();
+        }
+        if (job.getFinishTime() > latest_finish) {
+            latest_finish = job.getFinishTime();
+        }
     }
+    
+    // Makespan = time from first job start to last job finish
+    result.makespan = latest_finish - earliest_start;
+    if (result.makespan < EPSILON) {
+        result.makespan = 0.0f;
+    }
+    
+    result.num_cores = num_cores;
+    
+    result.context_switches = context_switch_counter.load();
+    result.dispatch_count = result.completed_jobs.size();
 
     printSummary(result, policy);
     return result;
@@ -94,7 +123,8 @@ void SchedulerEngine::schedulerThread(std::vector<Job> jobs, ISchedulingPolicy& 
                                      std::mutex& queue_mutex,
                                      std::condition_variable& job_available,
                                      std::atomic<bool>& simulation_running,
-                                     ScheduleResult& result) {
+                                     ScheduleResult& result,
+                                     WorkerPool& worker_pool) {
     std::deque<Job> pending;
     pending.insert(pending.end(),
                    std::make_move_iterator(jobs.begin()),
@@ -103,7 +133,7 @@ void SchedulerEngine::schedulerThread(std::vector<Job> jobs, ISchedulingPolicy& 
     float current_time = jobs.empty() ? 0.0f : jobs.front().getArrivalTime();
     const float simulation_start = current_time;
 
-    while (!pending.empty() || !ready_queue.empty() || simulation_running.load()) {
+    while (true) {
         // Admit newly arrived jobs to ready queue
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
@@ -116,10 +146,9 @@ void SchedulerEngine::schedulerThread(std::vector<Job> jobs, ISchedulingPolicy& 
             }
         }
 
-        // If no jobs ready and none pending, we're done
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
-            if (ready_queue.empty() && pending.empty()) {
+            if (pending.empty() && ready_queue.empty() && worker_pool.allIdle()) {
                 break;
             }
         }

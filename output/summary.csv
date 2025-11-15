@@ -1,0 +1,5 @@
+algorithm,avg_waiting_time,avg_turnaround_time,cpu_utilization,context_switches,num_jobs,makespan
+FCFS,4.71,10.98,100.00,3,5,8.39
+SJF,4.71,10.98,100.00,3,5,8.39
+Priority,4.71,10.98,100.00,3,5,8.39
+Round Robin,1.19,6.89,100.00,12,5,11.75

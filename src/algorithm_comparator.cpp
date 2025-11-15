@@ -58,11 +58,12 @@ bool AlgorithmComparator::runAndWriteAlgorithm(
     // Create metrics collector from schedule result
     MetricsCollector collector;
     collector.setMakespan(schedule_result.makespan);
+    collector.setCpuActiveTime(schedule_result.cpu_active_time);
+    collector.setContextSwitches(schedule_result.context_switches);
+    collector.setNumCores(num_cores);
     for (const auto& job : schedule_result.completed_jobs) {
         collector.recordJobCompletion(job);
     }
-    // Note: CPU time and context switches are in ScheduleResult
-    // We'd need to extend MetricsCollector or use ScheduleResult directly
     
     // Write to CSV (summary.csv will append, metrics.csv will overwrite)
     // For compare-all, we want to append metrics too, so we'll use a different approach

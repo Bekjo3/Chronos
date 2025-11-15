@@ -9,15 +9,20 @@ WorkerPool::WorkerPool(int num_cores, ISchedulingPolicy& policy,
                        std::vector<Job>& ready_queue,
                        std::mutex& queue_mutex,
                        std::condition_variable& job_available,
-                       std::atomic<bool>& simulation_running)
+                       std::atomic<bool>& simulation_running,
+                       std::vector<Job>& completed_jobs,
+                       std::mutex& completed_mutex,
+                       std::atomic<size_t>& context_switches)
     : num_cores_(num_cores)
     , policy_(policy)
     , ready_queue_(ready_queue)
     , queue_mutex_(queue_mutex)
     , job_available_(job_available)
     , simulation_running_(simulation_running)
+    , completed_jobs_(completed_jobs)
+    , completed_mutex_(completed_mutex)
+    , context_switches_(context_switches)
     , active_workers_(0)
-    , current_time_(0.0f)
     , executing_jobs_(num_cores)
 {
     for (int i = 0; i < num_cores_; ++i) {
@@ -50,6 +55,9 @@ bool WorkerPool::allIdle() const {
 }
 
 void WorkerPool::workerThread(int core_id) {
+    // Each core tracks its own local time (when it will be free)
+    float local_core_time = 0.0f;
+    
     while (simulation_running_.load() || !ready_queue_.empty()) {
         std::unique_lock<std::mutex> lock(queue_mutex_);
         
@@ -79,18 +87,25 @@ void WorkerPool::workerThread(int core_id) {
             continue;
         }
         
-        Job& job = *it;
+        //Copy the job before erasing from vector to avoid dangling reference
+        Job job = *it;
         
-        // Set job state and timestamps
-        const float dispatch_time = std::max(current_time_.load(), job.getArrivalTime());
+        // Remove job from ready queue to free the slot
+        ready_queue_.erase(it);
+        
+        // Core starts job at max(its current free time, job's arrival time)
+        const float dispatch_time = std::max(local_core_time, job.getArrivalTime());
+        
+        // Set start time only once (first execution)
         if (job.getStartTime() < 0.0f) {
             job.setStartTime(dispatch_time);
         }
-        current_time_.store(dispatch_time);
         
         job.setState(JobState::RUNNING);
-        executing_jobs_[core_id].store(&job);
         active_workers_.fetch_add(1);
+        
+        // Count this as a context switch (job dispatch to CPU)
+        context_switches_.fetch_add(1);
         
         // Get execution time slice
         const float time_slice = policy_.getTimeSlice();
@@ -103,16 +118,14 @@ void WorkerPool::workerThread(int core_id) {
             execution = remaining;
         }
         
-        // Remove job from ready queue before releasing lock
-        ready_queue_.erase(it);
         lock.unlock();
         
         // Execute job (simulate CPU execution by sleeping)
         executeJob(job, execution, core_id);
         
-        // Update time and remaining work
-        const float new_time = current_time_.load() + execution;
-        current_time_.store(new_time);
+        // Calculate when this core finishes executing this slice
+        const float finish_time = dispatch_time + execution;
+        local_core_time = finish_time;
         
         float new_remaining = remaining - execution;
         if (new_remaining < 0.001f) {
@@ -124,21 +137,24 @@ void WorkerPool::workerThread(int core_id) {
         lock.lock();
         
         if (new_remaining <= 0.001f) {
-            // Job completed
             job.setRemainingTime(0.0f);
-            job.setFinishTime(new_time);
+            job.setFinishTime(finish_time);
             job.setState(JobState::FINISHED);
             job.calculateMetrics();
-            policy_.onJobCompletion(&job, new_time);
+            policy_.onJobCompletion(&job, finish_time);
+            
+            // Add to shared completed jobs storage
+            {
+                std::lock_guard<std::mutex> completed_lock(completed_mutex_);
+                completed_jobs_.push_back(job);
+            }
         } else {
-            // Job not finished, put back in ready queue
             job.setState(JobState::READY);
             ready_queue_.push_back(job);
-            policy_.onJobCompletion(&job, new_time);
+            policy_.onJobCompletion(&job, finish_time);
             job_available_.notify_one(); // Notify other workers
         }
         
-        executing_jobs_[core_id].store(nullptr);
         active_workers_.fetch_sub(1);
     }
 }

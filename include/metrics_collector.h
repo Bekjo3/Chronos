@@ -25,6 +25,12 @@ public:
     // Set the total simulation makespan
     void setMakespan(float makespan);
     
+    void setCpuActiveTime(float cpu_time);
+    
+    void setContextSwitches(std::size_t switches);
+    
+    void setNumCores(int cores);
+    
     const std::vector<Job>& getCompletedJobs() const { return completed_jobs_; }
     
     float getTotalWaitingTime() const { return total_waiting_time_; }
@@ -69,6 +75,7 @@ private:
     float cpu_active_time_;
     float idle_time_;
     float makespan_;
+    int num_cores_;
     std::size_t dispatch_count_;
     
     mutable std::mutex metrics_mutex_;

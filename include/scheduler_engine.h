@@ -23,7 +23,9 @@ struct ScheduleResult {
     float cpu_active_time = 0.0f;
     float idle_time = 0.0f;
     float makespan = 0.0f;
+    int num_cores = 1;
     std::size_t dispatch_count = 0;
+    std::size_t context_switches = 0;
 
     float averageWaitingTime() const {
         return completed_jobs.empty()
@@ -38,11 +40,15 @@ struct ScheduleResult {
     }
 
     float cpuUtilization() const {
-        return makespan <= 0.0f ? 0.0f : cpu_active_time / makespan;
+        if (makespan <= 0.0f || num_cores <= 0) {
+            return 0.0f;
+        }
+        // For multi-core: utilization = total_cpu_time / (makespan * num_cores)
+        return std::min(1.0f, cpu_active_time / (makespan * static_cast<float>(num_cores)));
     }
 
     std::size_t contextSwitches() const {
-        return dispatch_count > 0 ? dispatch_count - 1 : 0;
+        return context_switches;
     }
 };
 
@@ -63,7 +69,8 @@ private:
                        std::mutex& queue_mutex,
                        std::condition_variable& job_available,
                        std::atomic<bool>& simulation_running,
-                       ScheduleResult& result);
+                       ScheduleResult& result,
+                       WorkerPool& worker_pool);
     
     // Collect completed jobs from ready queue
     void collectCompletedJobs(std::vector<Job>& ready_queue, 

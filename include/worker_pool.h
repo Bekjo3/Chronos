@@ -19,7 +19,10 @@ public:
                std::vector<Job>& ready_queue,
                std::mutex& queue_mutex,
                std::condition_variable& job_available,
-               std::atomic<bool>& simulation_running);
+               std::atomic<bool>& simulation_running,
+               std::vector<Job>& completed_jobs,
+               std::mutex& completed_mutex,
+               std::atomic<size_t>& context_switches);
     
     ~WorkerPool();
     
@@ -48,10 +51,12 @@ private:
     std::mutex& queue_mutex_;
     std::condition_variable& job_available_;
     std::atomic<bool>& simulation_running_;
+    std::vector<Job>& completed_jobs_;
+    std::mutex& completed_mutex_;
+    std::atomic<size_t>& context_switches_;
     
     std::vector<std::thread> workers_;
     std::atomic<int> active_workers_;
-    std::atomic<float> current_time_;
     
     // Track which core is executing which job
     std::vector<std::atomic<Job*>> executing_jobs_;

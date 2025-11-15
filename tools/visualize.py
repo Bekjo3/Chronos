@@ -22,19 +22,31 @@ def read_metrics_csv(filename: str) -> List[Dict]:
         print(f"Warning: {filename} not found. Skipping Gantt chart.")
         return metrics
     
-    with open(filename, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            metrics.append({
-                'algorithm': row['algorithm'],
-                'job_id': int(row['job_id']),
-                'arrival_time': float(row['arrival_time']),
-                'burst_time': float(row['burst_time']),
-                'start_time': float(row['start_time']),
-                'finish_time': float(row['finish_time']),
-                'waiting_time': float(row['waiting_time']),
-                'turnaround_time': float(row['turnaround_time']),
-            })
+    try:
+        with open(filename, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    metrics.append({
+                        'algorithm': row['algorithm'],
+                        'job_id': int(row['job_id']),
+                        'arrival_time': float(row['arrival_time']),
+                        'burst_time': float(row['burst_time']),
+                        'start_time': float(row['start_time']),
+                        'finish_time': float(row['finish_time']),
+                        'waiting_time': float(row['waiting_time']),
+                        'turnaround_time': float(row['turnaround_time']),
+                    })
+                except (KeyError, ValueError) as e:
+                    print(f"Warning: Skipping malformed row in {filename}: {e}")
+                    continue
+        
+        if not metrics:
+            print(f"Warning: {filename} is empty or contains no valid data.")
+        
+    except Exception as e:
+        print(f"Error reading {filename}: {e}")
+        return []
     
     return metrics
 
@@ -42,21 +54,33 @@ def read_metrics_csv(filename: str) -> List[Dict]:
 def read_summary_csv(filename: str) -> List[Dict]:
     summary = []
     if not os.path.exists(filename):
-        print(f"Error: {filename} not found.")
+        print(f"Warning: {filename} not found. Skipping comparison charts.")
         return summary
     
-    with open(filename, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            summary.append({
-                'algorithm': row['algorithm'],
-                'avg_waiting_time': float(row['avg_waiting_time']),
-                'avg_turnaround_time': float(row['avg_turnaround_time']),
-                'cpu_utilization': float(row['cpu_utilization']),
-                'context_switches': int(row['context_switches']),
-                'num_jobs': int(row['num_jobs']),
-                'makespan': float(row['makespan']),
-            })
+    try:
+        with open(filename, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    summary.append({
+                        'algorithm': row['algorithm'],
+                        'avg_waiting_time': float(row['avg_waiting_time']),
+                        'avg_turnaround_time': float(row['avg_turnaround_time']),
+                        'cpu_utilization': float(row['cpu_utilization']),
+                        'context_switches': int(row['context_switches']),
+                        'num_jobs': int(row['num_jobs']),
+                        'makespan': float(row['makespan']),
+                    })
+                except (KeyError, ValueError) as e:
+                    print(f"Warning: Skipping malformed row in {filename}: {e}")
+                    continue
+        
+        if not summary:
+            print(f"Warning: {filename} is empty or contains no valid data.")
+            
+    except Exception as e:
+        print(f"Error reading {filename}: {e}")
+        return []
     
     return summary
 
@@ -263,7 +287,11 @@ def main():
     summary = read_summary_csv(summary_file)
     
     if not metrics and not summary:
-        print("Error: No data files found. Please run the scheduler first.")
+        print("\nError: No valid data found in CSV files.")
+        print("Please run the scheduler first to generate data:")
+        print("  ./schedsim --cores 2 --algo FCFS --jobs 5")
+        print("or:")
+        print("  ./schedsim --cores 2 --jobs 10 --compare-all")
         sys.exit(1)
     
     print("Generating visualizations...")
