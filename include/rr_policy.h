@@ -20,6 +20,7 @@ public:
 
     std::string getName() const override { return "Round Robin"; }
     bool isPreemptive() const override { return true; }
+    float getTimeSlice() const override { return static_cast<float>(quantum_); }
     int getQuantum() const { return quantum_; }
 
 private:

@@ -28,6 +28,9 @@ public:
     // Check if the policy is preemptive
     // Preemptive policies can interrupt running jobs
     virtual bool isPreemptive() const = 0;
+
+    // Optional time slice (seconds). Negative ⇒ run job to completion.
+    virtual float getTimeSlice() const { return -1.0f; }
 };
 
 }
