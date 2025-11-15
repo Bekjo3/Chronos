@@ -1,9 +1,11 @@
 #include "scheduler_engine.h"
+#include "worker_pool.h"
 
 #include <algorithm>
 #include <deque>
 #include <iomanip>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 namespace chronos {
@@ -18,7 +20,7 @@ bool arrivalLess(const Job& lhs, const Job& rhs) {
 }
 } // namespace
 
-ScheduleResult SchedulerEngine::run(std::vector<Job> jobs, ISchedulingPolicy& policy) {
+ScheduleResult SchedulerEngine::run(std::vector<Job> jobs, ISchedulingPolicy& policy, int num_cores) {
     ScheduleResult result;
 
     if (jobs.empty()) {
@@ -26,109 +28,133 @@ ScheduleResult SchedulerEngine::run(std::vector<Job> jobs, ISchedulingPolicy& po
         return result;
     }
 
+    if (num_cores <= 0) {
+        std::cerr << "Error: Number of cores must be positive\n";
+        return result;
+    }
+
+    // Sort jobs by arrival time
     std::sort(jobs.begin(), jobs.end(), arrivalLess);
     const float simulation_start = jobs.front().getArrivalTime();
 
+    // Shared data structures
+    std::vector<Job> ready_queue;
+    ready_queue.reserve(jobs.size());
+    result.completed_jobs.reserve(jobs.size());
+    
+    std::mutex queue_mutex;
+    std::condition_variable job_available;
+    std::atomic<bool> simulation_running(true);
+    std::atomic<float> current_time(simulation_start);
+
+    // Create and start worker pool
+    WorkerPool worker_pool(num_cores, policy, ready_queue, 
+                          queue_mutex, job_available, simulation_running);
+    worker_pool.start();
+
+    // Start scheduler thread
+    std::thread scheduler(&SchedulerEngine::schedulerThread, this,
+                         std::move(jobs), std::ref(policy),
+                         std::ref(ready_queue), std::ref(queue_mutex),
+                         std::ref(job_available), std::ref(simulation_running),
+                         std::ref(result));
+
+    // Wait for scheduler to finish
+    scheduler.join();
+
+    // Stop worker threads
+    simulation_running.store(false);
+    job_available.notify_all();
+    worker_pool.stop();
+
+    // Collect any remaining completed jobs
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        collectCompletedJobs(ready_queue, result.completed_jobs, queue_mutex);
+    }
+
+    // Calculate final metrics
+    result.makespan = current_time.load() - simulation_start;
+    if (result.makespan < EPSILON) {
+        result.makespan = 0.0f;
+    }
+
+    // Calculate totals from completed jobs
+    for (const auto& job : result.completed_jobs) {
+        result.total_waiting_time += job.getWaitingTime();
+        result.total_turnaround_time += job.getTurnaroundTime();
+    }
+
+    printSummary(result, policy);
+    return result;
+}
+
+void SchedulerEngine::schedulerThread(std::vector<Job> jobs, ISchedulingPolicy& policy,
+                                     std::vector<Job>& ready_queue,
+                                     std::mutex& queue_mutex,
+                                     std::condition_variable& job_available,
+                                     std::atomic<bool>& simulation_running,
+                                     ScheduleResult& result) {
     std::deque<Job> pending;
     pending.insert(pending.end(),
                    std::make_move_iterator(jobs.begin()),
                    std::make_move_iterator(jobs.end()));
 
-    std::vector<Job> ready_queue;
-    ready_queue.reserve(pending.size());
-    result.completed_jobs.reserve(pending.size());
+    float current_time = jobs.empty() ? 0.0f : jobs.front().getArrivalTime();
+    const float simulation_start = current_time;
 
-    float current_time = simulation_start;
-
-    while (!pending.empty() || !ready_queue.empty()) {
-        // Admit newly arrived jobs.
-        while (!pending.empty() && pending.front().getArrivalTime() <= current_time + EPSILON) {
-            Job job = std::move(pending.front());
-            pending.pop_front();
-            job.setState(JobState::READY);
-            ready_queue.push_back(std::move(job));
-        }
-
-        if (ready_queue.empty()) {
-            if (!pending.empty()) {
-                const float next_arrival = pending.front().getArrivalTime();
-                if (next_arrival > current_time) {
-                    result.idle_time += next_arrival - current_time;
-                    current_time = next_arrival;
-                }
+    while (!pending.empty() || !ready_queue.empty() || simulation_running.load()) {
+        // Admit newly arrived jobs to ready queue
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            while (!pending.empty() && pending.front().getArrivalTime() <= current_time + EPSILON) {
+                Job job = std::move(pending.front());
+                pending.pop_front();
+                job.setState(JobState::READY);
+                ready_queue.push_back(std::move(job));
+                job_available.notify_one(); // Notify worker threads
             }
-            continue;
         }
 
-        Job* selected = policy.getNextJob(ready_queue);
-        if (!selected) {
-            selected = &ready_queue.front();
+        // If no jobs ready and none pending, we're done
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            if (ready_queue.empty() && pending.empty()) {
+                break;
+            }
         }
 
-        const std::size_t idx = static_cast<std::size_t>(selected - ready_queue.data());
-        Job& job = ready_queue[idx];
-
-        const float dispatch_time = std::max(current_time, job.getArrivalTime());
-        if (job.getStartTime() < 0.0f) {
-            job.setStartTime(dispatch_time);
-        }
-        if (dispatch_time - current_time > EPSILON) {
-            result.idle_time += dispatch_time - current_time;
-            current_time = dispatch_time;
+        // Advance time if no jobs are ready
+        if (ready_queue.empty() && !pending.empty()) {
+            const float next_arrival = pending.front().getArrivalTime();
+            if (next_arrival > current_time) {
+                result.idle_time += next_arrival - current_time;
+                current_time = next_arrival;
+            }
         }
 
-        job.setState(JobState::RUNNING);
-        result.dispatch_count++;
+        // Small sleep to prevent busy waiting
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
-        const float time_slice = policy.getTimeSlice();
-        const float remaining = job.getRemainingTime();
-        float execution = remaining;
-        if (time_slice > 0.0f) {
-            execution = std::min(remaining, time_slice);
-        }
-        if (execution < EPSILON) {
-            execution = remaining;
-        }
+    // Mark simulation as complete
+    simulation_running.store(false);
+    job_available.notify_all();
+}
 
-        current_time += execution;
-        result.cpu_active_time += execution;
-
-        float new_remaining = remaining - execution;
-        if (new_remaining < EPSILON) {
-            new_remaining = 0.0f;
-        }
-        job.setRemainingTime(new_remaining);
-
-        if (new_remaining <= EPSILON) {
-            job.setRemainingTime(0.0f);
-            job.setFinishTime(current_time);
-            job.setState(JobState::FINISHED);
-            job.calculateMetrics();
-
-            const float waiting = job.getWaitingTime();
-            const float turnaround = job.getTurnaroundTime();
-
-            policy.onJobCompletion(&job, current_time);
-
-            result.total_waiting_time += waiting;
-            result.total_turnaround_time += turnaround;
-
-            result.completed_jobs.push_back(std::move(job));
-            ready_queue.erase(ready_queue.begin() + static_cast<std::ptrdiff_t>(idx));
+void SchedulerEngine::collectCompletedJobs(std::vector<Job>& ready_queue,
+                                          std::vector<Job>& completed_jobs,
+                                          std::mutex& queue_mutex) {
+    // Separate completed jobs from ready jobs
+    std::vector<Job> still_ready;
+    for (auto& job : ready_queue) {
+        if (job.getState() == JobState::FINISHED) {
+            completed_jobs.push_back(std::move(job));
         } else {
-            job.setState(JobState::READY);
-            policy.onJobCompletion(&job, current_time);
+            still_ready.push_back(std::move(job));
         }
-
-        result.makespan = current_time - simulation_start;
     }
-
-    if (result.makespan < EPSILON) {
-        result.makespan = 0.0f;
-    }
-
-    printSummary(result, policy);
-    return result;
+    ready_queue = std::move(still_ready);
 }
 
 void SchedulerEngine::printSummary(const ScheduleResult& result, const ISchedulingPolicy& policy) const {

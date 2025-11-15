@@ -4,10 +4,17 @@
 #include "job.h"
 #include "scheduling_policy.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace chronos {
+
+// Forward declaration
+class WorkerPool;
 
 struct ScheduleResult {
     std::vector<Job> completed_jobs;
@@ -41,16 +48,29 @@ struct ScheduleResult {
 
 class SchedulerEngine {
 public:
-    // Run jobs sequentially using the supplied scheduling policy.
-    ScheduleResult run(std::vector<Job> jobs, ISchedulingPolicy& policy);
+    // Run jobs using multithreaded worker pool
+    ScheduleResult run(std::vector<Job> jobs, ISchedulingPolicy& policy, int num_cores);
 
     // Print a summary table and aggregate metrics.
     void printSummary(const ScheduleResult& result, const ISchedulingPolicy& policy) const;
 
 private:
     void printJobTable(const std::vector<Job>& jobs) const;
+    
+    // Scheduler thread function - dispatches jobs to ready queue
+    void schedulerThread(std::vector<Job> jobs, ISchedulingPolicy& policy, 
+                       std::vector<Job>& ready_queue,
+                       std::mutex& queue_mutex,
+                       std::condition_variable& job_available,
+                       std::atomic<bool>& simulation_running,
+                       ScheduleResult& result);
+    
+    // Collect completed jobs from ready queue
+    void collectCompletedJobs(std::vector<Job>& ready_queue, 
+                            std::vector<Job>& completed_jobs,
+                            std::mutex& queue_mutex);
 };
 
-} 
+}
 
-#endif 
+#endif
