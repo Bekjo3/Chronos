@@ -85,10 +85,10 @@ Run all algorithms on the same job set for comparison:
 ```
 
 **Outputs generated**:
-- ❌ No `metrics.csv` (intentionally omitted to avoid duplication)
-- ✅ `output/summary.csv` (aggregate comparison for all 4 algorithms)
-- ✅ Only `avg_metrics.png` and `utilization.png` available
-- ❌ No Gantt chart (requires per-job metrics)
+- No `metrics.csv` (intentionally omitted to avoid duplication)
+- `output/summary.csv` (aggregate comparison for all 4 algorithms)
+- Only `avg_metrics.png` and `utilization.png` available
+- No Gantt chart (requires per-job metrics)
 
 **Rationale**: In compare-all mode, the same job set runs 4 times (once per algorithm). Per-job metrics would create a massive CSV with duplicate job IDs. The mode is designed for **aggregate comparison**, not detailed timeline analysis.
 
@@ -226,8 +226,8 @@ Dual-axis chart showing efficiency vs overhead.
 
 | Mode | Gantt Chart | Avg Metrics | Utilization |
 |------|-------------|-------------|-------------|
-| **Single Algorithm** | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Compare-All** | ❌ No | ✅ Yes | ✅ Yes |
+| **Single Algorithm** |  Yes |  Yes |  Yes |
+| **Compare-All** |  No |  Yes |  Yes |
 
 ## Example Run & Results
 
